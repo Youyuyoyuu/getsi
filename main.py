@@ -14,8 +14,7 @@ from obspy import read, read_inventory
 from obspy.signal.cross_correlation import correlate, xcorr_max
 from obspy.signal.trigger import recursive_sta_lta, plot_trigger, trigger_onset
 
-def autopick_time_window(stream, faz):
-    qdata, tdata = stream[1].data, stream[2].data
+def autopick_time_window(qdata, tdata, faz):
     if faz != 0:
         pdata, odata = rotate_data(-qdata, tdata, faz)
     sta_len = 1 #
@@ -40,20 +39,22 @@ def autopick_time_window(stream, faz):
             else:
                 snr[i] = -100
         opt_w = np.unravel_index(snr.argmax(), snr.shape)[0]
-        window_start2 = window[opt_w][0] * delta
-        window_start1 = window_start2 - args.autopick
-        window_end1 = window[opt_w][1] * delta
-        window_end2 = window_end1 + args.autopick
+        window_start2 = window[opt_w][0]
+        window_start1 = int(window_start2 - args.autopick/delta)
+        window_end1 = window[opt_w][1]
+        window_end2 = int(window_end1 + args.autopick/delta)
 
         return window_start1, window_start2, window_end1, window_end2       
 
 def get_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument('filesname', help='files\' name without extension')
+    parser.add_argument('filespath', help='files\' absolute or relative path ')
     parser.add_argument('-a', '--autopick', help='automatically pick time window (a timespan is needed)', type=float)
     parser.add_argument('-f', '--filter', help='default bandpass filter (0.02-0.2Hz)', action='store_true')
-    parser.add_argument('-p', '--preprocess', help='detrend, taper and remove instrument response', action='store_true')
-    parser.add_argument('--force', help='ingnore previous execution and force to run the code once', action='store_true')
+    parser.add_argument('-i', '--inventory', help='path of the inventory with metadata of channels')
+    parser.add_argument('-p', '--phase', help='expected phase (default: S)', default='S')
+    parser.add_argument('-pp', '--preprocess', help='detrend, taper and remove instrument response', action='store_true')
+    # parser.add_argument('--force', help='ingnore previous execution and force to run the code once', action='store_true')
     args = parser.parse_args()
 
     return args
@@ -81,16 +82,15 @@ def calculate_si(pdata, odata):
 
     return si, err, ccvalue
 
-def flinn(stream, noise_thres=0):
+def flinn(ldata, qdata, tdata):
     '''Manually changed from obspy's source code.'''
-    mask = (stream[0][:] ** 2 + stream[1][:] ** 2 + stream[2][:] ** 2) > noise_thres
-    x = np.zeros((3, mask.sum()), dtype=np.float64)
+    x = np.zeros((3, ldata.size), dtype=np.float64)
     # East for x0, here changed to T
-    x[0, :] = stream[2][mask] #
+    x[0, :] = tdata #
     # North for x1, here changed to R or -Q
-    x[1, :] = -stream[1][mask]
+    x[1, :] = -qdata
     # Z for x2, here changed to L
-    x[2, :] = stream[0][mask] #
+    x[2, :] = ldata #
 
     covmat = np.cov(x)
     eigvec, eigenval, v = np.linalg.svd(covmat)
@@ -141,24 +141,25 @@ def focal_polarization(M, theta, phi, r=1):
     return paz[0, 0]
 
 def grid_search():
-    global window_start, window_end, si, eva, paz, opt_i, opt_j, st_window
-    window_start = np.arange(window_start1, window_start2, 0.2)
-    window_end = np.arange(window_end1, window_end2, 0.2)
+    global window_start, window_end, si, eva, paz, opt_i, opt_j, qdata_window, tdata_window
+    interval_start = math.floor((window_start2+1-window_start1)/50)
+    interval_end = math.floor((window_end2+1-window_end1)/50)
+    window_start = np.arange(window_start1, window_start2+1, interval_start).astype(int)
+    window_end = np.arange(window_end1, window_end2+1, interval_end).astype(int)
     si = np.zeros((window_start.size, window_end.size))
-    # err = np.zeros((window_start.size, window_end.size))
     eva = np.zeros((window_start.size, window_end.size))
     for i in range(window_start.size):
         for j in range(window_end.size):
-            st_window = st_filtered.slice(b_utc+window_start[i], b_utc+window_end[j])
-            paz = flinn(st_window)
-            pdata_window, odata_window = rotate_data(-st_window[1].data, st_window[2].data, paz)
+            ldata_window, qdata_window, tdata_window = ldata[window_start[i]:window_end[j]+1], qdata[window_start[i]:window_end[j]+1], tdata[window_start[i]:window_end[j]+1]
+            paz = flinn(ldata_window, qdata_window, tdata_window)
+            pdata_window, odata_window = rotate_data(-qdata_window, tdata_window, paz)
             si[i][j], err, ccvalue = calculate_si(pdata_window, odata_window)
-            eva[i][j] = err#
+            eva[i][j] = err / ccvalue #
     opt_i, opt_j = np.unravel_index(eva.argmin(), eva.shape)
-    st_window = st_filtered.slice(b_utc+window_start[opt_i], b_utc+window_end[opt_j])
-    paz = flinn(st_window)
-    pdata_window, odata_window = rotate_data(-st_window[1].data, st_window[2].data, paz)
-    result = calculate_si(pdata_window, odata_window)
+    ldata_window, qdata_window, tdata_window = ldata[window_start[opt_i]:window_end[opt_j]+1], qdata[window_start[opt_i]:window_end[opt_j]+1], tdata[window_start[opt_i]:window_end[opt_j]+1]
+    paz = flinn(ldata_window, qdata_window, tdata_window)
+    pdata_window, odata_window = rotate_data(-qdata_window, tdata_window, paz)
+    calculate_si(pdata_window, odata_window)
 
     return opt_i, opt_j
 
@@ -172,22 +173,23 @@ def moment_tensor():
     fm = open('./jan76_dec20.ndk', 'r')
     text = np.array(fm.readlines())
     mo = fnmatch.filter(text, '*'+evt_search+'*')
-    if len(mo) < 1: M is None
-    index = np.where(text==mo[0])[0][0]
-    # event_info = text[index].split()
-    # date, time, lat, lon, dep, mag = event_info[1:7]
-    moment = text[index+3].split()
-    expo, M= moment[0], moment[1::2]
-    M = [float(m) for m in M]
+    if len(mo) < 1:
+        M = None
+    else:
+        index = np.where(text==mo[0])[0][0]
+        # event_info = text[index].split()
+        # date, time, lat, lon, dep, mag = event_info[1:7]
+        moment = text[index+3].split()
+        expo, M= moment[0], moment[1::2]
+        M = [float(m) for m in M]
 
     return M
 
-def pick_time_window(stream, faz):
+def pick_time_window(qdata, tdata, faz):
     '''The input stream must be in LQT order.
     If theoretical polarization direction is not provided,
     only Q and T's waveforms will be displayed.
     '''
-    qdata, tdata = stream[1].data, stream[2].data
     if faz != 0:
         pdata, odata = rotate_data(-qdata, tdata, faz)
     timepoint = np.zeros(4)
@@ -219,22 +221,21 @@ def pick_time_window(stream, faz):
     def quit(event):
         sys.exit(0)
 
-    npts = stream[0].stats.npts
-
+    npts = qdata.size
     fig = plt.figure(figsize=[16, 6])
     ax0 = fig.add_axes([0.37, 0.025, 0.05, 0.05], frame_on=False, xticks=[], yticks=[])
     ax0.text(0.5, 0.5, pair_name)
     ax1 = fig.add_axes([0.03, 0.15, 0.95, 0.80])
     x = np.arange(npts)
     if faz == 0:
-        ax1.plot(x, qdata, color='crimson', label='Q')
-        ax1.plot(x, tdata, color='dimgrey', linestyle='dashed', label='T')
+        ax1.plot(x, qdata, color='firebrick', label='Q')
+        ax1.plot(x, tdata, color='midnightblue', linestyle='dashed', label='T')
     else:
-        ax1.plot(x, pdata, color='firebrick', label='P')
-        ax1.plot(x, odata, color='midnightblue', linestyle='dashed', label='O')
+        ax1.plot(x, pdata, color='crimson', label='P')
+        ax1.plot(x, odata, color='dimgrey', linestyle='dashed', label='O')
     ax1.axhline(y=0, color='darkgrey', linestyle='dotted')
-    ax1.axvline(x=30/delta, color='darkgrey', linestyle='dotted')
-    ax1.set_xlim(0, math.floor(90/delta))
+    # ax1.axvline(x=30/delta, color='darkgrey', linestyle='dotted') ######
+    ax1.set_xlim(0, npts)
     ax1.legend()
     xlabel_original = np.arange(0, npts, 10/delta)
     xlabel_changed = xlabel_original*delta
@@ -251,7 +252,7 @@ def pick_time_window(stream, faz):
     btn2.on_clicked(next)
     btn3.on_clicked(quit)
     plt.show()
-    window_start1, window_start2, window_end1, window_end2 = round(timepoint[0]*delta, 2), round(timepoint[1]*delta, 2), round(timepoint[2]*delta, 2), round(timepoint[3]*delta, 2)
+    window_start1, window_start2, window_end1, window_end2 = int(timepoint[0]), int(timepoint[1]), int(timepoint[2]), int(timepoint[3])
 
     return window_start1, window_start2, window_end1, window_end2
 
@@ -259,21 +260,28 @@ def prepare():
     '''Rotate from original ZNE to LQT components, 
     meanwhile write incident and take-off angle into new files.
     '''
-    os.makedirs('./cache/temp/', exist_ok=True)
+    global tak, az
     model = TauPyModel('iasp91')
     hdr = st[0].stats.sac
-    arrivals = model.get_ray_paths(hdr.evdp/1000, hdr.gcarc, ['S'])
+    arrivals = model.get_ray_paths(hdr.evdp/1000, hdr.gcarc, [args.phase])
     inc = arrivals[0].incident_angle
     tak = arrivals[0].takeoff_angle
     baz = hdr.baz
+    az = hdr.az
+    if args.filter:
+        st.filter('bandpass', freqmin=0.02, freqmax=0.2, corners=2, zerophase=True)
     try:
-        st.rotate('ZNE->LQT', baz, inc) # st[0] for T, st[1] for Q, st[2] for L
-        st[2].stats.sac.cmpinc = inc
-        st[2].stats.sac.user0 = tak
-        for tr in st:
-            tr.write('./cache/temp/'+pair_name+'.'+tr.stats.channel, 'SAC')
+        try:
+            zdata = st.select(component='Z')[0].data
+        except:
+            zdata = st.select(component='U')[0].data
+        ndata = st.select(component='N')[0].data
+        edata = st.select(component='E')[0].data
     except:
-        raise ValueError(pair_name+': Failed to rotate to LQT channels.')
+        raise ValueError('Must be ZNE channels.')
+    ldata, qdata, tdata = zne2lqt(zdata, ndata, edata, baz, inc)
+
+    return ldata, qdata, tdata
 
 def preprocess():
     '''Preprocess the raw data.
@@ -286,9 +294,9 @@ def preprocess():
     st.detrend('linear')
     st.taper(max_percentage=0.05)
     try:
-        try:
+        if args.inventory:
             inv = read_inventory('../inv.xml')
-        except:
+        else:
             inv = read_inventory('./cache/resp/'+station_code+'.xml')
     except:
         client = Client('IRIS')
@@ -314,21 +322,20 @@ def result_plot():
                     +'Station: '+station_code+'\n'\
                     +'SI = '+str(round(si[opt_i][opt_j], 2))+'\u00B1'+str(round(err, 2))
     ax0.text(0.3, 1.0, text_content, bbox=dict(facecolor='white', linewidth=0.5),ha='left', va='top',fontsize=12, linespacing=1.8)
-
     ax1 = fig.add_axes([0.05, 0.54, 0.425, 0.28]) # waveform
-    pdata, odata = rotate_data(-st_filtered[1].data, st_filtered[2].data, paz)
+    pdata, odata = rotate_data(-qdata, tdata, paz)
     x = np.arange(pdata.size)
     ax1.plot(x, pdata, color='crimson', label='P')
     ax1.plot(x, odata, color='dimgrey', linestyle='dashed', label='O')
     ax1.axhline(y=0, color='darkgrey', linestyle='dotted')
     ax1.axvline(x=30/delta, color='darkgrey', linestyle='dotted')
-    rect1_1 = pch.Rectangle((window_start1/delta, -1), (window_start2-window_start1)/delta, 2, color='teal', alpha=0.05)
+    rect1_1 = pch.Rectangle((window_start1, -1), window_start2-window_start1, 2, color='teal', alpha=0.05)
     ax1.add_patch(rect1_1)
-    rect2 = pch.Rectangle((window_end1/delta, -1), (window_end2-window_end1)/delta, 2, color='darkslateblue', alpha=0.05)
+    rect2 = pch.Rectangle((window_end1, -1), window_end2-window_end1, 2, color='darkslateblue', alpha=0.05)
     ax1.add_patch(rect2)
-    ax1.axvline(x=window_start[opt_i]/delta, color='teal')
-    ax1.axvline(x=window_end[opt_j]/delta, color='darkslateblue')
-    ax1.set_xlim(0, math.floor(90/delta))
+    ax1.axvline(x=window_start[opt_i], color='teal')
+    ax1.axvline(x=window_end[opt_j], color='darkslateblue')
+    ax1.set_xlim(0, pdata.size)
     ax1.legend()
     ax1.xaxis.set_major_locator(MultipleLocator(20/delta))
     ax1.xaxis.set_minor_locator(MultipleLocator(5/delta))
@@ -337,28 +344,28 @@ def result_plot():
     ax1.set_xticks(xlabel_original, xlabel_changed)
 
     ax2_1 = fig.add_axes([0.525, 0.54, 0.2, 0.32]) # grid search
-    si_distribution = ax2_1.contour(window_end, window_start, si, colors='k')
+    si_distribution = ax2_1.contour(window_end*delta, window_start*delta, si, colors='k')
     ax2_1.xaxis.set_major_locator(MultipleLocator(2))
     ax2_1.xaxis.set_minor_locator(MultipleLocator(1))
     ax2_1.yaxis.set_minor_locator(MultipleLocator(1))
-    ax2_1.axhline(window_start[opt_i], color='black')
-    ax2_1.axvline(window_end[opt_j], color='black')
+    ax2_1.axhline(window_start[opt_i]*delta, color='black')
+    ax2_1.axvline(window_end[opt_j]*delta, color='black')
     ax2_1.clabel(si_distribution, inline=True)
     ax2_1.set_title('SI')
     ax2_2 = fig.add_axes([0.75, 0.54, 0.2, 0.32])
-    ax2_2.axhline(window_start[opt_i], color='black')
-    ax2_2.axvline(window_end[opt_j], color='black')
-    eva_distribution = ax2_2.contour(window_end, window_start, eva, colors='k')
+    eva_distribution = ax2_2.contour(window_end*delta, window_start*delta, eva, colors='k')
     ax2_2.xaxis.set_minor_locator(MultipleLocator(1))
     ax2_2.yaxis.set_minor_locator(MultipleLocator(1))
+    ax2_2.axhline(window_start[opt_i]*delta, color='black')
+    ax2_2.axvline(window_end[opt_j]*delta, color='black')
     ax2_2.clabel(eva_distribution, inline=True)
     ax2_2.set_title('Error/cc')
 
     ax3 = fig.add_axes([0.05, 0.08, 0.425, 0.38]) # particle motion
-    mid = (np.average(st_window[2].data), np.average(-st_window[1].data))
-    m = max([max(np.absolute(-st_window[1].data)), max(np.absolute(st_window[2].data))])
-    ax3.plot(st_window[2].data,-st_window[1].data, color='grey')
-    ax3.scatter(st_window[2].data[0], -st_window[1].data[0], color='grey')
+    mid = (np.average(tdata_window), np.average(-qdata_window))
+    m = max([max(np.absolute(-qdata_window)), max(np.absolute(tdata_window))])
+    ax3.plot(tdata_window,-qdata_window, color='grey')
+    ax3.scatter(tdata_window[0], -qdata_window[0], color='grey')
     ax3.axline(mid, slope=np.tan((90-paz)*np.pi/180), color='crimson', label='calc_pd')
     ax3.axline(mid, slope=np.tan((90-faz)*np.pi/180), color='mediumpurple', label='theo_pd')
     ax3.set_title('Polarization direction: %.2f\u00b0 (%.2f\u00b0)' % (paz, faz))
@@ -377,8 +384,8 @@ def result_plot():
     ax4.axvline(x=pdata_norm.size, color='darkgrey', linestyle='dotted')
     ax4.xaxis.set_major_locator(MultipleLocator(1/delta))
     ax4.set_xticklabels([])
-    ax4.text(0, -1, str(round(window_start[opt_i], 2)),ha='left', va='bottom', color='darkgrey')
-    ax4.text(pdata_norm.size, -1, str(round(window_end[opt_j], 2)),ha='right', va='bottom', color='darkgrey')
+    ax4.text(0, -1, str(round(window_start[opt_i]*delta, 2)),ha='left', va='bottom', color='darkgrey')
+    ax4.text(pdata_norm.size, -1, str(round(window_end[opt_j]*delta, 2)),ha='right', va='bottom', color='darkgrey')
     ax4.set_title('Cross-correlation: %.2f (shift=%.2fs)' % (ccvalue, ccshift*delta))
     ax4.set_ylim(-1, 1)
     ax4.legend()
@@ -396,42 +403,44 @@ def rotate_data(y, x, theta):
 
     return y_prime, x_prime
 
+def zne2lqt(z, n, e, baz, inc):
+    '''rotate ZNE to LQT,
+    inc = 0 means vertically incident wave.
+    '''
+    inc = math.radians(inc)
+    baz = math.radians(baz)
+    l = np.cos(inc)*z - np.sin(inc)*np.sin(baz)*e - np.sin(inc)*np.cos(baz)*n
+    q = np.sin(inc)*z + np.cos(inc)*np.sin(baz)*e + np.cos(inc)*np.cos(baz)*n
+    t = -np.cos(baz)*e + np.sin(baz)*n
+
+    return l, q, t
+
 if __name__ == '__main__':
     args = get_arguments()
     # args =  # for debugging
-    st = read('../'+args.filesname+'*')
+    st = read(args.filespath+'*')
     net = st[0].stats.network
     station = st[0].stats.station
     location = st[0].stats.location
     station_code = net+'.'+station+'.'+location
     event_time = (st[0].stats.starttime+st[0].stats.sac.o).format_iris_web_service()
     pair_name = event_time+'-'+station_code
-    filelist = fnmatch.filter(os.listdir('./cache/temp/'), pair_name+'.*')
-    if len(filelist)==0 or args.force:
-        st = read('../'+args.filesname+'*')
-        if args.preprocess:
-            preprocess()
-        prepare()
-    st_lqt = read('./cache/temp/'+pair_name+'.*')
+    if args.preprocess:
+        preprocess()
+    ldata, qdata, tdata = prepare()
     M = moment_tensor()
-    try:
-        az, tak, delta, b_utc = st_lqt[0].stats.sac.az, st_lqt[0].stats.sac.user0, st_lqt[0].stats.delta, st_lqt[0].stats.starttime
-    except:
-        raise ValueError(pair_name+': Lack header infomations.')
-    st_filtered = st_lqt.copy()
-    if args.filter:
-        st_filtered.filter('bandpass', freqmin=0.02, freqmax=0.2, corners=2, zerophase=True)
+    delta = st[0].stats.delta
     if args.autopick:
         if M is None:
-            window_start1, window_start2, window_end1, window_end2 = autopick_time_window(st_filtered, 0)
+            window_start1, window_start2, window_end1, window_end2 = autopick_time_window(qdata, tdata, 0)
         else:
             faz = focal_polarization(M, tak, az)
-            window_start1, window_start2, window_end1, window_end2 = autopick_time_window(st_filtered, faz)
+            window_start1, window_start2, window_end1, window_end2 = autopick_time_window(qdata, tdata, faz)
     else:
         if M is None:
-            window_start1, window_start2, window_end1, window_end2 = pick_time_window(st_filtered, 0)
+            window_start1, window_start2, window_end1, window_end2 = pick_time_window(qdata, tdata, 0)
         else:
             faz = focal_polarization(M, tak, az)
-            window_start1, window_start2, window_end1, window_end2 = pick_time_window(st_filtered, faz)
+            window_start1, window_start2, window_end1, window_end2 = pick_time_window(qdata, tdata, faz)
     grid_search()
     result_plot()
