@@ -48,7 +48,7 @@ def autopick_time_window(qdata, tdata, faz):
 
 def get_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument('filespath', help='files\' absolute or relative path ')
+    parser.add_argument('filespath', help='absolute or relative path of data files')
     parser.add_argument('-a', '--autopick', help='automatically pick time window (a timespan is needed)', type=float)
     parser.add_argument('-f', '--filter', help='default bandpass filter (0.02-0.2Hz)', action='store_true')
     parser.add_argument('-i', '--inventory', help='path of the inventory with metadata of channels')
