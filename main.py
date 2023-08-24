@@ -297,6 +297,8 @@ def preprocess():
         endtime = st[0].stats.endtime
         if location is None:
             location_search = '--'
+        else:
+            location_search = location
         client.get_stations(starttime=starttime, endtime=endtime,
                             network=net, station=station, location=location_search, channel=channel,
                             level='response', filename='./cache/resp/'+station_code+'.xml', format='xml')
@@ -397,7 +399,7 @@ def rotate_data(y, x, theta):
 if __name__ == '__main__':
     args = get_arguments()
     # args =  # for debugging
-    st = read('../'+args.filesname+'.*Z')
+    st = read('../'+args.filesname+'*')
     net = st[0].stats.network
     station = st[0].stats.station
     location = st[0].stats.location
@@ -406,7 +408,7 @@ if __name__ == '__main__':
     pair_name = event_time+'-'+station_code
     filelist = fnmatch.filter(os.listdir('./cache/temp/'), pair_name+'.*')
     if len(filelist)==0 or args.force:
-        st = read('../'+args.filesname+'.*')
+        st = read('../'+args.filesname+'*')
         if args.preprocess:
             preprocess()
         prepare()
