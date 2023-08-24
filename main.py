@@ -259,6 +259,7 @@ def prepare():
     '''Rotate from original ZNE to LQT components, 
     meanwhile write incident and take-off angle into new files.
     '''
+    os.makedirs('./cache/temp/', exist_ok=True)
     model = TauPyModel('iasp91')
     hdr = st[0].stats.sac
     arrivals = model.get_ray_paths(hdr.evdp/1000, hdr.gcarc, ['S'])
@@ -280,6 +281,7 @@ def preprocess():
     either in a collection or in a single file, 
     search and write down one for this instrument individually.
     '''
+    os.makedirs('./cache/resp/', exist_ok=True)
     st.detrend('constant')
     st.detrend('linear')
     st.taper(max_percentage=0.05)
