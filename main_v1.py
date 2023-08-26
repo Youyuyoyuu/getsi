@@ -15,7 +15,7 @@ from obspy.signal.cross_correlation import correlate, xcorr_max
 from obspy.signal.trigger import recursive_sta_lta, plot_trigger, trigger_onset
 
 def autopick_time_window(qdata, tdata, faz):
-    if faz != 0:
+    if faz is not None:
         pdata, odata = rotate_data(-qdata, tdata, faz)
     sta_len = 1 #
     lta_len = 20 #
@@ -61,7 +61,7 @@ def get_arguments():
 
 def calculate_si(pdata, odata):
     '''Calculate splitting intensity and cross-correlation with time shift.'''
-    global max_p, derp_norm, pdata_norm, odata_norm, err, ccvalue, ccshift
+    global derp_norm, pdata_norm, odata_norm, err, ccvalue, ccshift
     max_p = np.max(np.abs(pdata))
     pdata_norm = pdata / max_p
     odata_norm = odata / max_p
@@ -346,15 +346,16 @@ def result_plot():
                     +'SI = '+str(round(si[opt_i][opt_j], 2))+'\u00B1'+str(round(err, 2))
     ax0.text(0.3, 1.0, text_content, bbox=dict(facecolor='white', linewidth=0.5),ha='left', va='top',fontsize=12, linespacing=1.8)
     ax1 = fig.add_axes([0.05, 0.54, 0.425, 0.28]) # waveform
-    pdata, odata = rotate_data(-qdata, tdata, paz) / max_p
+    pdata, odata = rotate_data(-qdata, tdata, paz)
     x = np.arange(pdata.size)
     ax1.plot(x, pdata, color='crimson', label='P')
     ax1.plot(x, odata, color='dimgrey', linestyle='dashed', label='O')
     ax1.axhline(y=0, color='darkgrey', linestyle='dotted')
     ax1.axvline(x=30/delta, color='darkgrey', linestyle='dotted')
-    rect1_1 = pch.Rectangle((window_start1, -2), window_start2-window_start1, 4, color='teal', alpha=0.05)
+    max_amp = np.max(np.abs(pdata))
+    rect1_1 = pch.Rectangle((window_start1, -2*max_amp), window_start2-window_start1, 4*max_amp, color='teal', alpha=0.05)
     ax1.add_patch(rect1_1)
-    rect2 = pch.Rectangle((window_end1, -2), window_end2-window_end1, 4, color='darkslateblue', alpha=0.05)
+    rect2 = pch.Rectangle((window_end1, -2*max_amp), window_end2-window_end1, 4*max_amp, color='darkslateblue', alpha=0.05)
     ax1.add_patch(rect2)
     ax1.axvline(x=window_start[opt_i], color='teal')
     ax1.axvline(x=window_end[opt_j], color='darkslateblue')
