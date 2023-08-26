@@ -61,7 +61,7 @@ def get_arguments():
 
 def calculate_si(pdata, odata):
     '''Calculate splitting intensity and cross-correlation with time shift.'''
-    global derp_norm, pdata_norm, odata_norm, err, ccvalue, ccshift
+    global max_p, derp_norm, pdata_norm, odata_norm, err, ccvalue, ccshift
     max_p = np.max(np.abs(pdata))
     pdata_norm = pdata / max_p
     odata_norm = odata / max_p
@@ -159,9 +159,26 @@ def grid_search():
     ldata_window, qdata_window, tdata_window = ldata[window_start[opt_i]:window_end[opt_j]+1], qdata[window_start[opt_i]:window_end[opt_j]+1], tdata[window_start[opt_i]:window_end[opt_j]+1]
     paz = flinn(ldata_window, qdata_window, tdata_window)
     pdata_window, odata_window = rotate_data(-qdata_window, tdata_window, paz)
-    calculate_si(pdata_window, odata_window)
+    _ = calculate_si(pdata_window, odata_window)
 
     return opt_i, opt_j
+
+def mode4():
+    global window_start1, window_start2, window_end1, window_end2, faz
+    if args.autopick:
+        if M is None:
+            faz = None
+        else:
+            faz = focal_polarization(M, tak, az)
+        window_start1, window_start2, window_end1, window_end2 = autopick_time_window(qdata, tdata, faz)
+    else:
+        if M is None:
+            faz = None
+        else:
+            faz = focal_polarization(M, tak, az)
+        window_start1, window_start2, window_end1, window_end2 = pick_time_window(qdata, tdata, faz)
+    grid_search()
+    result_plot()
 
 def moment_tensor():
     '''Search the moment tensor of a certain event.
@@ -190,7 +207,7 @@ def pick_time_window(qdata, tdata, faz):
     If theoretical polarization direction is not provided,
     only Q and T's waveforms will be displayed.
     '''
-    if faz != 0:
+    if faz is not None:
         pdata, odata = rotate_data(-qdata, tdata, faz)
     timepoint = np.zeros(4)
     def click(event):
@@ -227,7 +244,7 @@ def pick_time_window(qdata, tdata, faz):
     ax0.text(0.5, 0.5, pair_name)
     ax1 = fig.add_axes([0.03, 0.15, 0.95, 0.80])
     x = np.arange(npts)
-    if faz == 0:
+    if faz is None:
         ax1.plot(x, qdata, color='firebrick', label='Q')
         ax1.plot(x, tdata, color='midnightblue', linestyle='dashed', label='T')
     else:
@@ -315,6 +332,12 @@ def preprocess():
 
 def result_plot():
     '''Show up the final results in a figure.'''
+    def back(event):
+        plt.close()
+        mode4()
+    def quit(event):
+        sys.exit(0)
+
     fig = plt.figure(figsize=[16, 10])
 
     ax0 = fig.add_axes([0.05, 0.54, 0.425, 0.38], frame_on=False, xticks=[], yticks=[]) # information
@@ -323,15 +346,15 @@ def result_plot():
                     +'SI = '+str(round(si[opt_i][opt_j], 2))+'\u00B1'+str(round(err, 2))
     ax0.text(0.3, 1.0, text_content, bbox=dict(facecolor='white', linewidth=0.5),ha='left', va='top',fontsize=12, linespacing=1.8)
     ax1 = fig.add_axes([0.05, 0.54, 0.425, 0.28]) # waveform
-    pdata, odata = rotate_data(-qdata, tdata, paz)
+    pdata, odata = rotate_data(-qdata, tdata, paz) / max_p
     x = np.arange(pdata.size)
     ax1.plot(x, pdata, color='crimson', label='P')
     ax1.plot(x, odata, color='dimgrey', linestyle='dashed', label='O')
     ax1.axhline(y=0, color='darkgrey', linestyle='dotted')
     ax1.axvline(x=30/delta, color='darkgrey', linestyle='dotted')
-    rect1_1 = pch.Rectangle((window_start1, -1), window_start2-window_start1, 2, color='teal', alpha=0.05)
+    rect1_1 = pch.Rectangle((window_start1, -2), window_start2-window_start1, 4, color='teal', alpha=0.05)
     ax1.add_patch(rect1_1)
-    rect2 = pch.Rectangle((window_end1, -1), window_end2-window_end1, 2, color='darkslateblue', alpha=0.05)
+    rect2 = pch.Rectangle((window_end1, -2), window_end2-window_end1, 4, color='darkslateblue', alpha=0.05)
     ax1.add_patch(rect2)
     ax1.axvline(x=window_start[opt_i], color='teal')
     ax1.axvline(x=window_end[opt_j], color='darkslateblue')
@@ -367,8 +390,11 @@ def result_plot():
     ax3.plot(tdata_window,-qdata_window, color='grey')
     ax3.scatter(tdata_window[0], -qdata_window[0], color='grey')
     ax3.axline(mid, slope=np.tan((90-paz)*np.pi/180), color='crimson', label='calc_pd')
-    ax3.axline(mid, slope=np.tan((90-faz)*np.pi/180), color='mediumpurple', label='theo_pd')
-    ax3.set_title('Polarization direction: %.2f\u00b0 (%.2f\u00b0)' % (paz, faz))
+    if faz:
+        ax3.axline(mid, slope=np.tan((90-faz)*np.pi/180), color='mediumpurple', label='theo_pd')
+        ax3.set_title('Polarization direction: %.2f\u00b0 (%.2f\u00b0)' % (paz, faz))
+    else:
+        ax3.set_title('Polarization direction: %.2f\u00b0' % paz)
     ax3.set_xlim(-1.2*m, 1.2*m)
     ax3.set_ylim(-1.2*m, 1.2*m)
     ax3.set_xlabel('T')
@@ -390,6 +416,12 @@ def result_plot():
     ax4.set_ylim(-1, 1)
     ax4.legend()
 
+    ax5 = fig.add_axes([0.9, 0.015, 0.05, 0.04])
+    btn1 = Button(ax5, 'back', color='darkgrey')
+    btn1.on_clicked(back)
+    ax6 = fig.add_axes([0.84, 0.015, 0.05, 0.04])
+    btn2 = Button(ax6, 'quit', color='darkgrey')
+    btn2.on_clicked(quit)
     plt.show()
 
 def rms(array):
@@ -430,17 +462,4 @@ if __name__ == '__main__':
     ldata, qdata, tdata = prepare()
     M = moment_tensor()
     delta = st[0].stats.delta
-    if args.autopick:
-        if M is None:
-            window_start1, window_start2, window_end1, window_end2 = autopick_time_window(qdata, tdata, 0)
-        else:
-            faz = focal_polarization(M, tak, az)
-            window_start1, window_start2, window_end1, window_end2 = autopick_time_window(qdata, tdata, faz)
-    else:
-        if M is None:
-            window_start1, window_start2, window_end1, window_end2 = pick_time_window(qdata, tdata, 0)
-        else:
-            faz = focal_polarization(M, tak, az)
-            window_start1, window_start2, window_end1, window_end2 = pick_time_window(qdata, tdata, faz)
-    grid_search()
-    result_plot()
+    mode4()
