@@ -79,22 +79,29 @@ def cluster_analysis_3d():
     window_start = np.arange(window_start1, window_start2+1, interval).astype(int)
     window_end = np.arange(window_end1, window_end2+1, interval).astype(int)
     si = np.zeros((window_start.size, window_end.size))
+    err = np.zeros(window_start.size*window_end.size)
     sidata = np.zeros((window_start.size*window_end.size, 3))
     for i in range(window_start.size):
         for j in range(window_end.size):
             ldata_window, qdata_window, tdata_window = ldata[window_start[i]:window_end[j]+1], qdata[window_start[i]:window_end[j]+1], tdata[window_start[i]:window_end[j]+1]
             paz = flinn(ldata_window, qdata_window, tdata_window)
             pdata_window, odata_window = rotate_data(-qdata_window, tdata_window, paz)
-            si[i][j], _, _, _ = calculate_si(pdata_window, odata_window)
+            si[i][j], err[i*window_end.size+j:], _, _ = calculate_si(pdata_window, odata_window)
             sidata[i*window_end.size+j:] = window_end[j]*delta, window_start[i]*delta, si[i][j]
     data_scaled = standard(sidata)
     hdb = HDBSCAN()
     hdb.fit(data_scaled)
     labels = hdb.dbscan_clustering(cut_distance=0.25, min_cluster_size=window_start.size)
-    unique_labels, inverse, counts = np.unique(labels, return_counts=True, return_inverse=True)
+    unique_labels, counts = np.unique(labels, return_counts=True)
     maxlabel = unique_labels[counts[1:].argmax()+1]
-    inverse = inverse.reshape([window_start.size, window_end.size])
-    indexlist = np.where(unique_labels[inverse]==maxlabel)
+    mask = labels == maxlabel
+    errline = np.sort(err[mask])[int(mask.sum()*0.8)]
+    for i in range(err.size):
+        if mask[i] and err[i]>errline:
+            labels[i] = -2
+    unique_labels = np.append(unique_labels, -2)
+    labels_2d = labels.reshape([window_start.size, window_end.size])
+    indexlist = np.where(labels_2d==maxlabel)
     start_opt = int(round(np.mean(indexlist[0]))*interval+window_start1)
     end_opt = int(round(np.mean(indexlist[1]))*interval+window_end1)
     ldata_window, qdata_window, tdata_window = ldata[start_opt:end_opt+1], qdata[start_opt:end_opt+1], tdata[start_opt:end_opt+1]
@@ -163,33 +170,17 @@ def focal_polarization(M, theta, phi, r=1):
 def get_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('filespath', help='absolute or relative path of data files')
-    parser.add_argument('-a', '--autopick', help='automatically pick time window (a timespan is needed)', type=float)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('-a', '--autopick', help='automatically pick time window (a timespan is needed)', type=float)
+    group.add_argument('-m', '--manual', help='choose to pick 2 or 4 timepoints', choices=[2, 4], type=int)
     parser.add_argument('-f', '--filter', help='default bandpass filter (0.02-0.2Hz)', action='store_true')
     parser.add_argument('-i', '--inventory', help='path of the inventory with metadata of channels')
-    parser.add_argument('-m', '--mode', help='choose to pick 2 or 4 timepoints', choices=[2, 4], default=4, type=int)
     parser.add_argument('-p', '--phase', help='expected phase (default: S)', default='S')
     parser.add_argument('-r', '--preprocess', help='detrend, taper and remove instrument response', action='store_true')
     # parser.add_argument('--force', help='ingnore previous execution and force to run the code once', action='store_true')
     args = parser.parse_args()
 
     return args
-
-def mode4():
-    global window_start1, window_start2, window_end1, window_end2, faz
-    if args.autopick:
-        if M is None:
-            faz = None
-        else:
-            faz = focal_polarization(M, tak, az)
-        window_start1, window_start2, window_end1, window_end2 = autopick_time_window(qdata, tdata, faz)
-    else:
-        if M is None:
-            faz = None
-        else:
-            faz = focal_polarization(M, tak, az)
-        window_start1, window_start2, window_end1, window_end2 = pick_time_window4(qdata, tdata, faz)
-    cluster_analysis_3d()
-    result_plot4()
 
 def moment_tensor():
     '''Search the moment tensor of a certain event.
@@ -349,7 +340,12 @@ def prepare():
     global tak, az
     model = TauPyModel('iasp91')
     hdr = st[0].stats.sac
-    arrivals = model.get_ray_paths(hdr.evdp/1000, hdr.gcarc, [args.phase])
+    if hdr.evdp > 700: # depth in m
+        arrivals = model.get_ray_paths(hdr.evdp/1000, hdr.gcarc, [args.phase])
+    elif hdr.evdp <= 700: # depth in km
+        arrivals = model.get_ray_paths(hdr.evdp, hdr.gcarc, [args.phase])
+    else:
+        raise ValueError('Header lost depth.')
     inc = arrivals[0].incident_angle
     tak = arrivals[0].takeoff_angle
     baz = hdr.baz
@@ -399,11 +395,27 @@ def preprocess():
         inv = read_inventory('./cache/resp/'+station_code+'.xml')
     st.remove_response(inventory=inv)
 
-def result_plot4():
+def process():
+    global window_start1, window_start2, window_end1, window_end2, faz
+    if M is None:
+        faz = None
+    else:
+        faz = focal_polarization(M, tak, az)
+    if args.autopick:
+        window_start1, window_start2, window_end1, window_end2 = autopick_time_window(qdata, tdata, faz)
+    elif args.manual == 2:
+        window_start1, window_end2 = pick_time_window2(qdata, tdata, faz)
+        window_start2, window_end1 = int((window_start1+window_end2)/2)-10, int((window_start1+window_end2)/2)+10
+    else:
+        window_start1, window_start2, window_end1, window_end2 = pick_time_window4(qdata, tdata, faz)
+    cluster_analysis_3d()
+    result_plot()
+
+def result_plot():
     '''Show up the final results in a figure.'''
     def back(event):
         plt.close()
-        mode4()
+        process()
     def quit(event):
         sys.exit(0)
 
@@ -436,24 +448,28 @@ def result_plot4():
     xlabel_changed = xlabel_original*delta
     ax1.set_xticks(xlabel_original, xlabel_changed)
 
-    ax2_2 = fig.add_axes([0.75, 0.54, 0.2, 0.32], projection='3d')
+    ax2_1 = fig.add_axes([0.515, 0.54, 0.2, 0.32], projection='3d')
     colors = [plt.cm.Spectral(each) for each in np.linspace(0.8, 1, len(unique_labels))]
     for k, col in zip(unique_labels, colors):
         if k == -1:
             col = [0, 0, 0, 0.2]
+        elif k == -2:
+            col = [0.8, 0.1, 0.1, 0.1]
         elif k == maxlabel:
-            col = [0.8, 0.1, 0.1, 0.8]
+            col = [0.8, 0.1, 0.1, 0.9]
         data_p = sidata[labels==k]
-        ax2_2.scatter(data_p[:, 0], data_p[:, 1], data_p[:, 2], color=tuple(col))
-    ax2_1 = fig.add_axes([0.525, 0.54, 0.2, 0.32]) # distribution of SI
-    si_distribution = ax2_1.contour(window_end*delta, window_start*delta, si, colors='k')
-    ax2_1.xaxis.set_major_locator(MultipleLocator(2))
-    ax2_1.xaxis.set_minor_locator(MultipleLocator(1))
-    ax2_1.yaxis.set_minor_locator(MultipleLocator(1))
-    ax2_1.axhline(start_opt*delta, color='black')
-    ax2_1.axvline(end_opt*delta, color='black')
-    ax2_1.clabel(si_distribution, inline=True)
-    ax2_1.set_title('SI')
+        ax2_1.scatter(data_p[:, 0], data_p[:, 1], data_p[:, 2], color=tuple(col))
+    ax2_1.set_title('Clusters: %d' % (len(unique_labels)-2))
+    ax2_2 = fig.add_axes([0.75, 0.54, 0.2, 0.32]) # distribution of SI
+    si_distribution = ax2_2.contour(window_end*delta, window_start*delta, si, colors='k')
+    ax2_2.xaxis.set_major_locator(MultipleLocator(2))
+    ax2_2.xaxis.set_minor_locator(MultipleLocator(1))
+    ax2_2.yaxis.set_minor_locator(MultipleLocator(1))
+    ax2_2.yaxis.set_ticks_position('right')
+    ax2_2.axhline(start_opt*delta, color='black')
+    ax2_2.axvline(end_opt*delta, color='black')
+    ax2_2.clabel(si_distribution, inline=True)
+    ax2_2.set_title('SI')
 
     ax3 = fig.add_axes([0.05, 0.08, 0.425, 0.38]) # particle motion
     mid = (np.average(tdata_window), np.average(-qdata_window))
@@ -525,7 +541,6 @@ def zne2lqt(z, n, e, baz, inc):
 
 if __name__ == '__main__':
     args = get_arguments()
-    # args =  # for debugging
     st = read(args.filespath+'*')
     net = st[0].stats.network
     station = st[0].stats.station
@@ -538,7 +553,4 @@ if __name__ == '__main__':
     ldata, qdata, tdata = prepare()
     M = moment_tensor()
     delta = st[0].stats.delta
-    if args.mode == 4:
-        mode4()
-    # else:
-    #     mode2()
+    process()
