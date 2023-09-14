@@ -65,17 +65,17 @@ def calculate_si(pdata, odata):
     sq_rmsdr = np.dot(derp_norm, derp_norm.T)
     si = -2 * np.dot(odata_norm, derp_norm.T) / sq_rmsdr
     npoint = np.size(pdata_norm)
-    err = np.sqrt((np.dot(odata_norm, odata_norm.T)-0.25*sq_rmsdr*si**2)/npoint)
-    shift_limit = int(2/delta)
+    err = np.sqrt((np.dot(odata_norm, odata_norm.T)-0.25*sq_rmsdr*si**2) / npoint)
+    shift_limit = int(2 / delta)
     cc = correlate(derp_norm, odata_norm, shift_limit)
     ccshift, ccvalue = xcorr_max(cc)
 
     return si, err, ccvalue, ccshift
 
-def cluster_analysis_3d():
+def cluster_analysis():
     global window_start, window_end, si, start_opt, end_opt, labels, unique_labels, maxlabel, sidata, paz_opt, si_opt, err_opt, ccvalue_opt, ccshift_opt, qdata_window, tdata_window
-    # interval = int(min((window_start2-window_start1)/delta/50, (window_end2-window_end1)/delta/50, 10))
-    interval = 10
+    interval = int(max((window_start2-window_start1)/50, (window_end2-window_end1)/50))
+    # interval = 5
     window_start = np.arange(window_start1, window_start2+1, interval).astype(int)
     window_end = np.arange(window_end1, window_end2+1, interval).astype(int)
     si = np.zeros((window_start.size, window_end.size))
@@ -91,26 +91,27 @@ def cluster_analysis_3d():
     data_scaled = standard(sidata)
     hdb = HDBSCAN()
     hdb.fit(data_scaled)
-    labels = hdb.dbscan_clustering(cut_distance=0.25, min_cluster_size=window_start.size)
+    cut_dist = interval * delta * 1.25 # The coefficient just depends on experience
+    labels = hdb.dbscan_clustering(cut_distance=cut_dist, min_cluster_size=window_start.size)
     unique_labels, counts = np.unique(labels, return_counts=True)
-    maxlabel = unique_labels[counts[1:].argmax()+1]
+    maxlabel = unique_labels[counts[1:].argmax() + 1]
     mask = labels == maxlabel
-    errline = np.sort(err[mask])[int(mask.sum()*0.8)]
+    errline = np.sort(err[mask])[int(mask.sum() * 0.8)]
     for i in range(err.size):
         if mask[i] and err[i]>errline:
             labels[i] = -2
     unique_labels = np.append(unique_labels, -2)
     labels_2d = labels.reshape([window_start.size, window_end.size])
-    indexlist = np.where(labels_2d==maxlabel)
-    start_opt = int(round(np.mean(indexlist[0]))*interval+window_start1)
-    end_opt = int(round(np.mean(indexlist[1]))*interval+window_end1)
+    indexlist = np.where(labels_2d == maxlabel)
+    start_opt = int(round(np.mean(indexlist[0]))*interval + window_start1)
+    end_opt = int(round(np.mean(indexlist[1]))*interval + window_end1)
     ldata_window, qdata_window, tdata_window = ldata[start_opt:end_opt+1], qdata[start_opt:end_opt+1], tdata[start_opt:end_opt+1]
     paz_opt = flinn(ldata_window, qdata_window, tdata_window)
     pdata_window, odata_window = rotate_data(-qdata_window, tdata_window, paz)
     si_opt, err_opt, ccvalue_opt, ccshift_opt = calculate_si(pdata_window, odata_window)
 
 def flinn(ldata, qdata, tdata):
-    '''Manually changed from obspy's source code.'''
+    '''Changed from obspy's source code.'''
     x = np.zeros((3, ldata.size), dtype=np.float64)
     # East for x0, here changed to T
     x[0, :] = tdata #
@@ -186,7 +187,7 @@ def moment_tensor():
     '''Search the moment tensor of a certain event.
     If not exist, return None.
     '''
-    evt_search = event_time[:16]
+    evt_search = event_time[ : 16]
     evt_search = evt_search.replace('-', '/')
     evt_search = evt_search.replace('T', ' ')
     fm = open('./jan76_dec20.ndk', 'r')
@@ -199,7 +200,7 @@ def moment_tensor():
         # event_info = text[index].split()
         # date, time, lat, lon, dep, mag = event_info[1:7]
         moment = text[index+3].split()
-        expo, M= moment[0], moment[1::2]
+        expo, M= moment[0], moment[1 : : 2]
         M = [float(m) for m in M]
 
     return M
@@ -354,11 +355,11 @@ def prepare():
         st.filter('bandpass', freqmin=0.02, freqmax=0.2, corners=2, zerophase=True)
     try:
         try:
-            zdata = st.select(component='Z')[0].data
+            zdata = st.select(component = 'Z')[0].data
         except:
-            zdata = st.select(component='U')[0].data
-        ndata = st.select(component='N')[0].data
-        edata = st.select(component='E')[0].data
+            zdata = st.select(component = 'U')[0].data
+        ndata = st.select(component = 'N')[0].data
+        edata = st.select(component = 'E')[0].data
     except:
         raise ValueError('Must be ZNE channels.')
     ldata, qdata, tdata = zne2lqt(zdata, ndata, edata, baz, inc)
@@ -374,15 +375,15 @@ def preprocess():
     os.makedirs('./cache/resp/', exist_ok=True)
     st.detrend('constant')
     st.detrend('linear')
-    st.taper(max_percentage=0.05)
+    st.taper(max_percentage = 0.05)
     try:
         if args.inventory:
             inv = read_inventory('../inv.xml')
         else:
-            inv = read_inventory('./cache/resp/'+station_code+'.xml')
+            inv = read_inventory('./cache/resp/' + station_code + '.xml')
     except:
         client = Client('IRIS')
-        channel = st[0].stats.channel[:2]+'*'
+        channel = st[0].stats.channel[ : 2]+'*'
         starttime = st[0].stats.starttime
         endtime = st[0].stats.endtime
         if location is None:
@@ -392,8 +393,8 @@ def preprocess():
         client.get_stations(starttime=starttime, endtime=endtime,
                             network=net, station=station, location=location_search, channel=channel,
                             level='response', filename='./cache/resp/'+station_code+'.xml', format='xml')
-        inv = read_inventory('./cache/resp/'+station_code+'.xml')
-    st.remove_response(inventory=inv)
+        inv = read_inventory('./cache/resp/' + station_code + '.xml')
+    st.remove_response(inventory = inv)
 
 def process():
     global window_start1, window_start2, window_end1, window_end2, faz
@@ -408,7 +409,7 @@ def process():
         window_start2, window_end1 = int((window_start1+window_end2)/2)-10, int((window_start1+window_end2)/2)+10
     else:
         window_start1, window_start2, window_end1, window_end2 = pick_time_window4(qdata, tdata, faz)
-    cluster_analysis_3d()
+    cluster_analysis()
     result_plot()
 
 def result_plot():
@@ -542,6 +543,8 @@ def zne2lqt(z, n, e, baz, inc):
 if __name__ == '__main__':
     args = get_arguments()
     st = read(args.filespath+'*')
+    # st.decimate(2, no_filter=True)
+    # st.interpolate(100)
     net = st[0].stats.network
     station = st[0].stats.station
     location = st[0].stats.location
